@@ -29,7 +29,7 @@ void temp_init(void)
     RCC->AHB2ENR |= RCC_AHB2ENR_ADCEN;
     (void)RCC->AHB2ENR;
 
-    /* Тактирование АЦП от шины HCLK (32 МГц) без делителя, плюс включаем
+    /* Тактирование АЦП от шины HCLK (64 МГц) без делителя, плюс включаем
        внутренние каналы: датчик температуры (TSEN) и опорное напряжение (VREFEN) */
     ADC1_COMMON->CCR = ADC_CCR_CKMODE_0 | ADC_CCR_TSEN | ADC_CCR_VREFEN;
 

@@ -116,13 +116,29 @@ static void clock_init(void)
     RCC->CR |= RCC_CR_HSION;
     while (!(RCC->CR & RCC_CR_HSIRDY)) { }
 
-    /* 32 МГц уже требуют 1 такт ожидания у Flash — ставим ДО переключения */
-    FLASH->ACR = (FLASH->ACR & ~FLASH_ACR_LATENCY_Msk) | FLASH_ACR_LATENCY_1WS;
-    while ((FLASH->ACR & FLASH_ACR_LATENCY_Msk) != FLASH_ACR_LATENCY_1WS) { }
+    /*
+     * PLL: 32 МГц (HSE) / M=2 = 16 МГц -> x N=8 = 128 МГц (VCO) -> / R=2 = 64 МГц.
+     * 64 МГц — максимум для нашего ядра. А радио-ядру (CPU2) больше 32 МГц нельзя,
+     * поэтому ему ставим свой делитель на 2 (C2HPRE = 1000) — до переключения.
+     */
+    RCC->EXTCFGR = (RCC->EXTCFGR & ~RCC_EXTCFGR_C2HPRE_Msk) | (0x8U << RCC_EXTCFGR_C2HPRE_Pos);
+    while (!(RCC->EXTCFGR & RCC_EXTCFGR_C2HPREF)) { }
 
-    RCC->CFGR = (RCC->CFGR & ~RCC_CFGR_SW_Msk) | RCC_CFGR_SW_1;          /* SW = 10: HSE */
-    while ((RCC->CFGR & RCC_CFGR_SWS_Msk) != RCC_CFGR_SWS_1) { }
-    SystemCoreClockUpdate();   /* SystemCoreClock = 32000000 */
+    RCC->PLLCFGR = (3U << RCC_PLLCFGR_PLLSRC_Pos)     /* источник — HSE */
+                 | (1U << RCC_PLLCFGR_PLLM_Pos)       /* M = 2 (в регистре M-1) */
+                 | (8U << RCC_PLLCFGR_PLLN_Pos)       /* N = 8 */
+                 | (1U << RCC_PLLCFGR_PLLR_Pos)       /* R = 2 (в регистре R-1) */
+                 | RCC_PLLCFGR_PLLREN;                /* включить выход R -> системная частота */
+    RCC->CR |= RCC_CR_PLLON;
+    while (!(RCC->CR & RCC_CR_PLLRDY)) { }
+
+    /* 64 МГц требуют 3 такта ожидания у Flash — ставим ДО переключения */
+    FLASH->ACR = (FLASH->ACR & ~FLASH_ACR_LATENCY_Msk) | FLASH_ACR_LATENCY_3WS;
+    while ((FLASH->ACR & FLASH_ACR_LATENCY_Msk) != FLASH_ACR_LATENCY_3WS) { }
+
+    RCC->CFGR = (RCC->CFGR & ~RCC_CFGR_SW_Msk) | RCC_CFGR_SW_Msk;        /* SW = 11: PLL */
+    while ((RCC->CFGR & RCC_CFGR_SWS_Msk) != RCC_CFGR_SWS_Msk) { }
+    SystemCoreClockUpdate();   /* SystemCoreClock = 64000000 */
 
     /* LSE живёт в «домене резервного питания» — сначала снимаем защиту записи */
     PWR->CR1 |= PWR_CR1_DBP;

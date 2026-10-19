@@ -7,7 +7,7 @@
 
 static void short_delay(void)
 {
-    for (volatile int i = 0; i < 80; i++) { }   /* ~5 мкс на 32 МГц */
+    for (volatile uint32_t i = 0; i < SystemCoreClock / 400000; i++) { }   /* ~5 мкс при любой частоте */
 }
 
 static void pin_mode(uint32_t pin, uint32_t mode)
@@ -66,7 +66,7 @@ void i2c1_init(void)
     /* TIMINGR для 100 кГц (по таблице из Reference Manual RM0434):
        делитель PRESC даёт такт 4 МГц (250 нс), дальше в этих тактах:
        SCLDEL=4, SDADEL=2, SCLH=0x0F (4 мкс), SCLL=0x13 (5 мкс) */
-    uint32_t presc = SystemCoreClock / 4000000 - 1;     /* 16 МГц -> 3, 32 МГц -> 7 */
+    uint32_t presc = SystemCoreClock / 4000000 - 1;     /* 32 МГц -> 7, 64 МГц -> 15 (больше 15 нельзя) */
     I2C1->TIMINGR = (presc << 28) | 0x00420F13;
     I2C1->CR1 = I2C_CR1_PE;                   /* включаем */
 }

@@ -36,9 +36,10 @@ static int      have_data;
 static uint32_t pwm_duty = 30;
 static uint32_t pwm_hz   = 1000;
 
-static const uint16_t tb_us[]   = { 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000 };
-static const char    *tb_name[] = { "20us", "50us", "100us", "200us", "500us", "1ms", "2ms", "5ms", "10ms" };
-static volatile uint32_t tb = 4;            /* 500 мкс на клетку */
+/* Клетка = 16 точек, значит частота замеров = 16 / время клетки: 5 мкс -> 3.2 млн/с */
+static const uint16_t tb_us[]   = { 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000 };
+static const char    *tb_name[] = { "5us", "10us", "20us", "50us", "100us", "200us", "500us", "1ms", "2ms", "5ms", "10ms" };
+static volatile uint32_t tb = 6;            /* 500 мкс на клетку */
 static volatile int hold;
 
 /* ------------------------------------------------------------------ */
@@ -113,8 +114,11 @@ static int capture(void)
     ADC1->CFGR = (ADC1->CFGR & ~(ADC_CFGR_EXTSEL_Msk | ADC_CFGR_EXTEN_Msk | ADC_CFGR_CONT |
                                  ADC_CFGR_DMACFG | ADC_CFGR_RES_Msk | ADC_CFGR_ALIGN))
                | (0xBU << ADC_CFGR_EXTSEL_Pos) | ADC_CFGR_EXTEN_0 | ADC_CFGR_DMAEN | ADC_CFGR_OVRMOD;
-    /* Время выборки 12.5 такта: 12.5 + 12.5 на преобразование = 25 тактов = 0.8 мкс при 32 МГц */
-    ADC1->SMPR1 = (ADC1->SMPR1 & ~(7U << ADC_SMPR1_SMP6_Pos)) | (2U << ADC_SMPR1_SMP6_Pos);
+    /* Время выборки 2.5 такта (минимум): 2.5 + 12.5 на преобразование = 15 тактов
+       = 0.23 мкс при 64 МГц -> до ~4.2 млн измерений в секунду.
+       Короткая выборка требует «сильного» источника (как наш ШИМ с пина).
+       Для слабого сигнала нужен буферный операционный усилитель. */
+    ADC1->SMPR1 &= ~(7U << ADC_SMPR1_SMP6_Pos);
     ADC1->SQR1  = ADC_CH << ADC_SQR1_SQ1_Pos;
 
     /* DMA1 канал 1: из регистра ADC1->DR в buf[], по 16 бит, адрес в памяти растёт */
