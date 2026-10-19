@@ -1,0 +1,48 @@
+#ifndef APP_CONF_H
+#define APP_CONF_H
+
+/*
+ * Настройки BLE-стека, которые передаются во второе ядро командой SHCI_C2_BLE_Init.
+ * Значения взяты из примера ST BLE_HeartRateFreeRTOS (Cube WB 1.24), лишнее урезано.
+ */
+#include "stm32wbxx.h"
+#include "ble_bufsize.h"
+#include "shci.h"
+
+#define CFG_BLE_NUM_LINK                1     /* одновременно один телефон */
+#define CFG_BLE_NUM_GATT_SERVICES       8
+#define CFG_BLE_NUM_GATT_ATTRIBUTES     68
+#define CFG_BLE_MAX_ATT_MTU             156
+#define CFG_BLE_ATT_VALUE_ARRAY_SIZE    1344
+#define CFG_BLE_PREPARE_WRITE_LIST_SIZE BLE_PREP_WRITE_X_ATT(CFG_BLE_MAX_ATT_MTU)
+#define CFG_BLE_MBLOCK_COUNT            (BLE_MBLOCKS_CALC(CFG_BLE_PREPARE_WRITE_LIST_SIZE, CFG_BLE_MAX_ATT_MTU, CFG_BLE_NUM_LINK))
+#define CFG_BLE_DATA_LENGTH_EXTENSION   1
+#define CFG_BLE_PERIPHERAL_SCA          500
+#define CFG_BLE_CENTRAL_SCA             0
+/* Источник медленных часов для радио — кварц LSE 32.768 кГц на плате Nucleo */
+#define CFG_BLE_LS_SOURCE  (SHCI_C2_BLE_INIT_CFG_BLE_LS_NOCALIB | SHCI_C2_BLE_INIT_CFG_BLE_LS_OTHER_DEV | SHCI_C2_BLE_INIT_CFG_BLE_LS_CLK_LSE)
+#define CFG_BLE_MAX_CONN_EVENT_LENGTH   0xFFFFFFFF
+#define CFG_BLE_HSE_STARTUP_TIME        0x148
+#define CFG_BLE_VITERBI_MODE            1
+#define CFG_BLE_OPTIONS  (SHCI_C2_BLE_INIT_OPTIONS_LL_HOST | SHCI_C2_BLE_INIT_OPTIONS_WITH_SVC_CHANGE_DESC | \
+                          SHCI_C2_BLE_INIT_OPTIONS_DEVICE_NAME_RW | SHCI_C2_BLE_INIT_OPTIONS_NO_EXT_ADV | \
+                          SHCI_C2_BLE_INIT_OPTIONS_NO_CS_ALGO2 | SHCI_C2_BLE_INIT_OPTIONS_FULL_GATTDB_NVM | \
+                          SHCI_C2_BLE_INIT_OPTIONS_GATT_CACHING_NOTUSED | SHCI_C2_BLE_INIT_OPTIONS_POWER_CLASS_2_3)
+#define CFG_BLE_OPTIONS_EXT  (SHCI_C2_BLE_INIT_OPTIONS_APPEARANCE_READONLY | SHCI_C2_BLE_INIT_OPTIONS_ENHANCED_ATT_NOTSUPPORTED)
+#define CFG_BLE_MAX_COC_INITIATOR_NBR   32
+#define CFG_BLE_MIN_TX_POWER            (-40)
+#define CFG_BLE_MAX_TX_POWER            6
+#define CFG_BLE_RX_MODEL_CONFIG         SHCI_C2_BLE_INIT_RX_MODEL_AGC_RSSI_LEGACY
+#define CFG_BLE_MAX_ADV_SET_NBR         3
+#define CFG_BLE_MAX_ADV_DATA_LEN        1650
+#define CFG_BLE_TX_PATH_COMPENS         0
+#define CFG_BLE_RX_PATH_COMPENS         0
+#define CFG_BLE_CORE_VERSION            SHCI_C2_BLE_INIT_BLE_CORE_5_4
+#define CFG_BLE_MAX_ADD_EATT_BEARERS    4
+
+/* Буферы транспортного слоя */
+#define CFG_TLBLE_EVT_QUEUE_LENGTH          5
+#define CFG_TLBLE_MOST_EVENT_PAYLOAD_SIZE   255
+#define TL_BLE_EVENT_FRAME_SIZE             (TL_EVT_HDR_SIZE + CFG_TLBLE_MOST_EVENT_PAYLOAD_SIZE)
+
+#endif
