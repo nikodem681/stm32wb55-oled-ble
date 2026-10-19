@@ -20,6 +20,8 @@ SRCS = \
   Core/Src/temp.c \
   Core/Src/scope.c \
   Core/Src/stats.c \
+  Core/Src/rtc.c \
+  Core/Src/clock.c \
   Core/Src/system_stm32wbxx.c \
   Middlewares/FreeRTOS/tasks.c \
   Middlewares/FreeRTOS/queue.c \
@@ -59,7 +61,7 @@ INCS = -ICore/Inc -ICore/Inc/wpan -IDrivers/CMSIS/Include -IDrivers/CMSIS/Device
 MCU    = -mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard
 CFLAGS = $(MCU) -DSTM32WB55xx $(INCS) -Og -g3 -Wall -ffunction-sections -fdata-sections -std=gnu11
 LDFLAGS = $(MCU) -Tstm32wb55xx_flash_cm4.ld --specs=nano.specs --specs=nosys.specs \
-          -Wl,--gc-sections -Wl,-Map=$(BUILD)/$(TARGET).map
+          -Wl,--gc-sections -Wl,-Map=$(BUILD)/$(TARGET).map -lm
 
 OBJS = $(addprefix $(BUILD)/,$(SRCS:.c=.o) $(ASRCS:.s=.o))
 

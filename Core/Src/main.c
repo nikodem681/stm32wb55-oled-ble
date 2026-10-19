@@ -21,6 +21,8 @@
 #include "ble_app.h"
 #include "scope.h"
 #include "stats.h"
+#include "rtc.h"
+#include "clock.h"
 #include <string.h>
 
 #define LED_BLUE  5
@@ -36,9 +38,9 @@ volatile uint32_t g_disp_addr   = 0;
 volatile uint32_t g_frames      = 0;
 volatile uint32_t g_presses     = 0;
 /* Что сейчас на дисплее. SW3 (держать 1 с) листает экраны по кругу. */
-enum { SCREEN_TEXT, SCREEN_SCOPE, SCREEN_TASKS, SCREEN_COUNT };
+enum { SCREEN_TEXT, SCREEN_CLOCK, SCREEN_SCOPE, SCREEN_TASKS, SCREEN_COUNT };
 static volatile int screen = SCREEN_TEXT;
-static const char *const screen_names[] = { "text", "oscilloscope", "tasks" };
+static const char *const screen_names[] = { "text", "clock", "oscilloscope", "tasks" };
 #define scope_screen (screen == SCREEN_SCOPE)
 volatile int32_t  g_temp_x10    = 0;      /* температура кристалла, десятые °C */
 
@@ -328,6 +330,58 @@ static void print_ble_status(void (*out)(const char *))
     out("\r\n");
 }
 
+/* Прочитать число из ровно n цифр; -1, если там не цифры */
+static int num(const char *p, int n)
+{
+    int v = 0;
+    while (n--) {
+        if (*p < '0' || *p > '9') return -1;
+        v = v * 10 + (*p++ - '0');
+    }
+    return v;
+}
+
+static char *two_digits(char *p, int v) { *p++ = (char)('0' + v / 10); *p++ = (char)('0' + v % 10); return p; }
+
+/* "time" — показать; "time 2026-10-19 14:30:05" — выставить */
+static void cmd_time(const char *arg, void (*out)(const char *))
+{
+    char buf[12];
+    while (*arg == ' ') arg++;
+
+    if (*arg) {
+        /* формат строго YYYY-MM-DD HH:MM:SS (19 символов) */
+        rtc_time_t t;
+        int y = num(arg, 4), mo = num(arg + 5, 2), d = num(arg + 8, 2);
+        int h = num(arg + 11, 2), mi = num(arg + 14, 2), se = num(arg + 17, 2);
+        if (strlen(arg) != 19 || arg[4] != '-' || arg[7] != '-' || arg[10] != ' ' ||
+            arg[13] != ':' || arg[16] != ':' || y < 0 || mo < 0 || d < 0 || h < 0 || mi < 0 || se < 0) {
+            out("Format: time YYYY-MM-DD HH:MM:SS\r\n");
+            return;
+        }
+        t.year = (uint16_t)y; t.month = (uint8_t)mo; t.day = (uint8_t)d;
+        t.hour = (uint8_t)h;  t.min = (uint8_t)mi;  t.sec = (uint8_t)se;
+        if (rtc_set(&t) != 0) { out("Invalid date or time\r\n"); return; }
+        out("Clock set. ");
+    }
+
+    if (!rtc_is_set()) { out("Clock is not set\r\n"); return; }
+    rtc_time_t t;
+    rtc_get(&t);
+    char s[24], *p = s;
+    p = utoa_dec(t.year, buf + sizeof buf); memcpy(s, p, 4); p = s + 4;
+    *p++ = '-'; p = two_digits(p, t.month); *p++ = '-'; p = two_digits(p, t.day); *p++ = ' ';
+    p = two_digits(p, t.hour); *p++ = ':'; p = two_digits(p, t.min); *p++ = ':'; p = two_digits(p, t.sec);
+    *p = '\0';
+    out("Now: "); out(s);
+
+    uint32_t ago = rtc_seconds(&t) - rtc_last_sync();
+    out(", synced ");
+    if (ago < 120)        { out(utoa_dec(ago, buf + sizeof buf)); out(" s ago\r\n"); }
+    else if (ago < 7200)  { out(utoa_dec(ago / 60, buf + sizeof buf)); out(" min ago\r\n"); }
+    else                  { out(utoa_dec(ago / 3600, buf + sizeof buf)); out(" h ago\r\n"); }
+}
+
 /* Выполнить команду. Одна и та же функция работает и для USB, и для Bluetooth —
    отличается только out(): куда печатать ответ. */
 void app_handle_line(const char *line, void (*out)(const char *))
@@ -341,6 +395,7 @@ void app_handle_line(const char *line, void (*out)(const char *))
             "  clear   - clear the OLED text\r\n"
             "  ble     - Bluetooth status\r\n"
             "  scope   - switch OLED: text / oscilloscope\r\n"
+            "  time    - show clock; time YYYY-MM-DD HH:MM:SS - set\r\n"
             "  tasks   - CPU load and stack of every task\r\n"
             "  screen  - next OLED screen (text/scope/tasks)\r\n"
             "  pwm N   - test PWM duty 0..100 % (pin D3)\r\n"
@@ -366,6 +421,8 @@ void app_handle_line(const char *line, void (*out)(const char *))
     } else if (strcmp(line, "scope") == 0) {
         screen = scope_screen ? SCREEN_TEXT : SCREEN_SCOPE;
         out("Screen: "); out(screen_names[screen]); out("\r\n");
+    } else if (strcmp(line, "time") == 0 || strncmp(line, "time ", 5) == 0) {
+        cmd_time(line + 4, out);
     } else if (strcmp(line, "tasks") == 0) {
         stats_print(out);
     } else if (strcmp(line, "screen") == 0) {
@@ -509,9 +566,21 @@ static void display_task(void *arg)
                 scope_frame();                    /* снять сигнал и нарисовать осциллограмму */
             } else if (screen == SCREEN_TASKS) {
                 stats_draw();                     /* таблица загрузки задач */
+            } else if (screen == SCREEN_CLOCK) {
+                clock_draw();                     /* циферблат и календарь */
             } else {
                 /* Заголовок + линия под ним */
-                ssd1306_text(0, 0, "Hello, STM32!");
+                if (rtc_is_set()) {               /* время вместо приветствия, если часы выставлены */
+                    rtc_time_t t;
+                    char hdr[9];
+                    rtc_get(&t);
+                    two_digits(two_digits(two_digits(hdr, t.hour) + 1, t.min) + 1, t.sec);
+                    hdr[2] = hdr[5] = ':';
+                    hdr[8] = '\0';
+                    ssd1306_text(0, 0, hdr);
+                } else {
+                    ssd1306_text(0, 0, "Hello, STM32!");
+                }
                 draw_usb_icon(80, usb_cdc_state());
                 draw_ble_icon(87, ble_app_state(), g_frames);
                 draw_temp(g_temp_x10);
@@ -541,6 +610,7 @@ int main(void)
     FLASH->SR = FLASH_SR_OPTVERR;
 
     clock_init();
+    rtc_init();
     gpio_init();
     led_pwm_init();
     adc_shared_init();
