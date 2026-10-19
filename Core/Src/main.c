@@ -19,6 +19,7 @@
 #include "usb_cdc.h"
 #include "temp.h"
 #include "ble_app.h"
+#include "scope.h"
 #include <string.h>
 
 #define LED_BLUE  5
@@ -33,6 +34,7 @@ volatile uint32_t g_disp_status = 0xFF;   /* последний i2c_status_t о�
 volatile uint32_t g_disp_addr   = 0;
 volatile uint32_t g_frames      = 0;
 volatile uint32_t g_presses     = 0;
+static volatile int scope_screen;        /* 1 — на дисплее осциллограф, 0 — обычный текст */
 volatile int32_t  g_temp_x10    = 0;      /* температура кристалла, десятые °C */
 
 /* Яркость синего светодиода: длительность импульса в мкс из периода 1000 мкс */
@@ -132,7 +134,7 @@ static void clock_init(void)
 
 static void gpio_init(void)
 {
-    RCC->AHB2ENR |= RCC_AHB2ENR_GPIOBEN | RCC_AHB2ENR_GPIOCEN;
+    RCC->AHB2ENR |= RCC_AHB2ENR_GPIOBEN | RCC_AHB2ENR_GPIOCEN | RCC_AHB2ENR_GPIODEN;
     (void)RCC->AHB2ENR;
 
     /* Светодиоды PB0, PB1, PB5 — выходы */
@@ -142,32 +144,39 @@ static void gpio_init(void)
     /* Кнопка SW1 = PC4: вход с подтяжкой вверх, нажатие даёт 0 */
     GPIOC->MODER &= ~(3U << 8);
     GPIOC->PUPDR = (GPIOC->PUPDR & ~(3U << 8)) | (1U << 8);
+
+    /* Кнопки SW2 = PD0, SW3 = PD1: так же, вход с подтяжкой вверх */
+    GPIOD->MODER &= ~((3U << 0) | (3U << 2));
+    GPIOD->PUPDR = (GPIOD->PUPDR & ~((3U << 0) | (3U << 2))) | (1U << 0) | (1U << 2);
 }
 
 /*
- * «Программный ШИМ» для синего светодиода на TIM2.
+ * «Программный ШИМ» для синего светодиода на TIM17
+ * (PB5 не подключён ни к одному каналу таймера, поэтому переключаем пин в прерывании).
  * Таймер считает микросекунды от 0 до 999 (период 1 мс = 1 кГц — глаз не видит мерцания).
  *   - переполнение (update) -> включаем светодиод;
  *   - совпадение с CCR1      -> выключаем.
  * Чем меньше CCR1, тем короче вспышка и тем тусклее светодиод.
+ * (TIM2 занят осциллографом — он запускает измерения АЦП.)
  */
 static void led_pwm_init(void)
 {
-    RCC->APB1ENR1 |= RCC_APB1ENR1_TIM2EN;
-    (void)RCC->APB1ENR1;
-    TIM2->PSC  = SystemCoreClock / 1000000 - 1;   /* делим до 1 МГц -> 1 тик = 1 мкс */
-    TIM2->ARR  = 1000 - 1;        /* период 1000 мкс */
-    TIM2->CCR1 = blue_duty;
-    TIM2->DIER = TIM_DIER_UIE | TIM_DIER_CC1IE;
-    NVIC_SetPriority(TIM2_IRQn, 7);
-    NVIC_EnableIRQ(TIM2_IRQn);
-    TIM2->CR1  = TIM_CR1_CEN;
+    RCC->APB2ENR |= RCC_APB2ENR_TIM17EN;
+    (void)RCC->APB2ENR;
+    TIM17->PSC  = SystemCoreClock / 1000000 - 1;  /* делим до 1 МГц -> 1 тик = 1 мкс */
+    TIM17->ARR  = 1000 - 1;       /* период 1000 мкс */
+    TIM17->CCR1 = blue_duty;
+    TIM17->DIER = TIM_DIER_UIE | TIM_DIER_CC1IE;
+    NVIC_SetPriority(TIM1_TRG_COM_TIM17_IRQn, 7);
+    NVIC_EnableIRQ(TIM1_TRG_COM_TIM17_IRQn);
+    TIM17->CR1  = TIM_CR1_CEN;
 }
 
-void TIM2_IRQHandler(void)
+/* Вектор общий с TIM1, но прерывания TIM1 мы не включаем — здесь только TIM17 */
+void TIM1_TRG_COM_TIM17_IRQHandler(void)
 {
-    uint32_t sr = TIM2->SR;
-    TIM2->SR = ~sr;                               /* сбрасываем обработанные флаги */
+    uint32_t sr = TIM17->SR;
+    TIM17->SR = ~sr;                              /* сбрасываем обработанные флаги */
     if ((sr & TIM_SR_UIF) && blue_on && blue_duty) led(LED_BLUE, 1);
     if ((sr & TIM_SR_CC1IF) && blue_duty < 1000)   led(LED_BLUE, 0);
 }
@@ -214,21 +223,63 @@ static void heartbeat_task(void *arg)
     }
 }
 
+/* Сообщение и в USB, и в Bluetooth */
+static void say(const char *a, const char *b, const char *c)
+{
+    usb_cdc_print(a); usb_cdc_print(b); usb_cdc_print(c);
+    ble_print(a);     ble_print(b);     ble_print(c);
+}
+
+/*
+ * Кнопки опрашиваем раз в 20 мс (заодно это антидребезг). Нажатие = переход 1 -> 0.
+ *   SW1: на осциллографе — скважность ШИМ +10%, на текстовом экране — счётчик нажатий;
+ *   SW2: развёртка (время на клетку);
+ *   SW3: коротко — RUN/HOLD, держать 1 с — сменить экран.
+ */
 static void button_task(void *arg)
 {
     (void)arg;
     char buf[12];
-    int prev = 1;
+    int prev1 = 1, prev2 = 1, prev3 = 1;
+    int held3 = 0;                                /* сколько опросов SW3 удерживается */
+
     for (;;) {
-        int now = (GPIOC->IDR >> 4) & 1;
-        if (prev && !now) {                       /* фронт 1 -> 0 = нажатие */
-            g_presses++;
-            const char *n = utoa_dec(g_presses, buf + sizeof buf);
-            usb_cdc_print("SW1 pressed, total: "); usb_cdc_print(n); usb_cdc_print("\r\n");
-            ble_print("SW1 pressed, total: ");     ble_print(n);     ble_print("\r\n");
+        int sw1 = (GPIOC->IDR >> 4) & 1;
+        int sw2 = (GPIOD->IDR >> 0) & 1;
+        int sw3 = (GPIOD->IDR >> 1) & 1;
+
+        if (prev1 && !sw1) {
+            if (scope_screen) {
+                uint32_t d = scope_duty() + 10;
+                if (d > 90) d = 10;
+                scope_set_duty(d);
+                say("PWM duty ", utoa_dec(d, buf + sizeof buf), "%\r\n");
+            } else {
+                g_presses++;
+                say("SW1 pressed, total: ", utoa_dec(g_presses, buf + sizeof buf), "\r\n");
+            }
         }
-        prev = now;
-        vTaskDelay(pdMS_TO_TICKS(20));            /* заодно антидребезг */
+
+        if (prev2 && !sw2 && scope_screen) {
+            scope_next_timebase();
+            say("Timebase ", scope_timebase_name(), "/div\r\n");
+        }
+
+        if (!sw3) {
+            if (++held3 == 50) {                  /* 50 * 20 мс = 1 с */
+                scope_screen = !scope_screen;
+                say("Screen: ", scope_screen ? "oscilloscope" : "text", "\r\n");
+            }
+        } else {
+            if (!prev3 && held3 < 50 && scope_screen) {   /* отпустили быстро */
+                scope_toggle_hold();
+                say("Scope: ", scope_is_hold() ? "HOLD" : "RUN", "\r\n");
+            }
+            held3 = 0;
+        }
+
+        prev1 = sw1; prev2 = sw2; prev3 = sw3;
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
 
@@ -268,6 +319,9 @@ void app_handle_line(const char *line, void (*out)(const char *))
             "  temp    - chip temperature\r\n"
             "  clear   - clear the OLED text\r\n"
             "  ble     - Bluetooth status\r\n"
+            "  scope   - switch OLED: text / oscilloscope\r\n"
+            "  pwm N   - test PWM duty 0..100 % (pin D3)\r\n"
+            "  pwmf N  - test PWM frequency, Hz\r\n"
             "  help    - this text\r\n"
             "  other   - shown on the OLED\r\n");
     } else if (strncmp(line, "led ", 4) == 0) {
@@ -275,7 +329,7 @@ void app_handle_line(const char *line, void (*out)(const char *))
         for (const char *c = line + 4; *c >= '0' && *c <= '9'; c++) p = p * 10 + (uint32_t)(*c - '0');
         if (p > 100) p = 100;
         blue_duty = p * 10;
-        TIM2->CCR1 = blue_duty;
+        TIM17->CCR1 = blue_duty;
         out("LED brightness = ");
         out(utoa_dec(p, buf + sizeof buf));
         out("%\r\n");
@@ -286,6 +340,23 @@ void app_handle_line(const char *line, void (*out)(const char *))
     } else if (strcmp(line, "clear") == 0) {
         log_clear();
         out("OLED cleared\r\n");
+    } else if (strcmp(line, "scope") == 0) {
+        scope_screen = !scope_screen;
+        out(scope_screen ? "Screen: oscilloscope\r\n" : "Screen: text\r\n");
+    } else if (strncmp(line, "pwmf ", 5) == 0) {
+        uint32_t f = 0;
+        for (const char *c = line + 5; *c >= '0' && *c <= '9'; c++) f = f * 10 + (uint32_t)(*c - '0');
+        scope_set_freq(f);
+        out("PWM frequency = ");
+        out(utoa_dec(scope_freq(), buf + sizeof buf));
+        out(" Hz\r\n");
+    } else if (strncmp(line, "pwm ", 4) == 0) {
+        uint32_t d = 0;
+        for (const char *c = line + 4; *c >= '0' && *c <= '9'; c++) d = d * 10 + (uint32_t)(*c - '0');
+        scope_set_duty(d);
+        out("PWM duty = ");
+        out(utoa_dec(scope_duty(), buf + sizeof buf));
+        out("%\r\n");
     } else if (strcmp(line, "ble") == 0) {
         print_ble_status(out);
     } else {
@@ -406,18 +477,22 @@ static void display_task(void *arg)
 
             ssd1306_clear();
 
-            /* Заголовок + линия под ним */
-            ssd1306_text(0, 0, "Hello, STM32!");
-            draw_usb_icon(80, usb_cdc_state());
-            draw_ble_icon(87, ble_app_state(), g_frames);
-            draw_temp(g_temp_x10);
-            for (int x = 0; x < SSD1306_WIDTH; x++) ssd1306_pixel(x, 7, 1);
+            if (scope_screen) {
+                scope_frame();                    /* снять сигнал и нарисовать осциллограмму */
+            } else {
+                /* Заголовок + линия под ним */
+                ssd1306_text(0, 0, "Hello, STM32!");
+                draw_usb_icon(80, usb_cdc_state());
+                draw_ble_icon(87, ble_app_state(), g_frames);
+                draw_temp(g_temp_x10);
+                for (int x = 0; x < SSD1306_WIDTH; x++) ssd1306_pixel(x, 7, 1);
 
-            /* Текст с компьютера: страницы 1..6 */
-            for (int i = 0; i < rows; i++) ssd1306_text(0, 1 + i, text[i]);
+                /* Текст с компьютера: страницы 1..6 */
+                for (int i = 0; i < rows; i++) ssd1306_text(0, 1 + i, text[i]);
 
-            /* Бегающая точка внизу — видно, что кадры обновляются */
-            ssd1306_pixel(2 + (int)(g_frames % 124), 61, 1);
+                /* Бегающая точка внизу — видно, что кадры обновляются */
+                ssd1306_pixel(2 + (int)(g_frames % 124), 61, 1);
+            }
 
             st = ssd1306_update();
             g_disp_status = st;
@@ -438,6 +513,8 @@ int main(void)
     clock_init();
     gpio_init();
     led_pwm_init();
+    adc_shared_init();
+    scope_init();
 
     log_mutex = xSemaphoreCreateMutex();
 
