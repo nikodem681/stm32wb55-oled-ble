@@ -22,7 +22,15 @@ extern uint32_t SystemCoreClock;
 #define configUSE_TICK_HOOK                     0
 #define configUSE_MALLOC_FAILED_HOOK            1
 #define configCHECK_FOR_STACK_OVERFLOW          2
-#define configUSE_TRACE_FACILITY                0
+#define configUSE_TRACE_FACILITY                1   /* нужно для uxTaskGetSystemState() */
+
+/* Статистика: сколько времени проработала каждая задача.
+   Часы — счётчик тактов ядра DWT CYCCNT, поделённый до 1 МГц (см. stats.c). */
+#define configGENERATE_RUN_TIME_STATS           1
+void     stats_timer_init(void);
+uint32_t stats_timer_value(void);
+#define portCONFIGURE_TIMER_FOR_RUN_TIME_STATS()  stats_timer_init()
+#define portGET_RUN_TIME_COUNTER_VALUE()          stats_timer_value()
 #define configSUPPORT_DYNAMIC_ALLOCATION         1
 #define configSUPPORT_STATIC_ALLOCATION         0
 

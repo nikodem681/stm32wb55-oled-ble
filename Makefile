@@ -19,6 +19,7 @@ SRCS = \
   Core/Src/usb_cdc.c \
   Core/Src/temp.c \
   Core/Src/scope.c \
+  Core/Src/stats.c \
   Core/Src/system_stm32wbxx.c \
   Middlewares/FreeRTOS/tasks.c \
   Middlewares/FreeRTOS/queue.c \

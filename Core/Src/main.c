@@ -20,6 +20,7 @@
 #include "temp.h"
 #include "ble_app.h"
 #include "scope.h"
+#include "stats.h"
 #include <string.h>
 
 #define LED_BLUE  5
@@ -34,7 +35,11 @@ volatile uint32_t g_disp_status = 0xFF;   /* последний i2c_status_t о�
 volatile uint32_t g_disp_addr   = 0;
 volatile uint32_t g_frames      = 0;
 volatile uint32_t g_presses     = 0;
-static volatile int scope_screen;        /* 1 — на дисплее осциллограф, 0 — обычный текст */
+/* Что сейчас на дисплее. SW3 (держать 1 с) листает экраны по кругу. */
+enum { SCREEN_TEXT, SCREEN_SCOPE, SCREEN_TASKS, SCREEN_COUNT };
+static volatile int screen = SCREEN_TEXT;
+static const char *const screen_names[] = { "text", "oscilloscope", "tasks" };
+#define scope_screen (screen == SCREEN_SCOPE)
 volatile int32_t  g_temp_x10    = 0;      /* температура кристалла, десятые °C */
 
 /* Яркость синего светодиода: длительность импульса в мкс из периода 1000 мкс */
@@ -250,7 +255,7 @@ static void say(const char *a, const char *b, const char *c)
  * Кнопки опрашиваем раз в 20 мс (заодно это антидребезг). Нажатие = переход 1 -> 0.
  *   SW1: на осциллографе — скважность ШИМ +10%, на текстовом экране — счётчик нажатий;
  *   SW2: развёртка (время на клетку);
- *   SW3: коротко — RUN/HOLD, держать 1 с — сменить экран.
+ *   SW3: коротко — RUN/HOLD, держать 1 с — следующий экран (текст -> осциллограф -> задачи).
  */
 static void button_task(void *arg)
 {
@@ -283,8 +288,8 @@ static void button_task(void *arg)
 
         if (!sw3) {
             if (++held3 == 50) {                  /* 50 * 20 мс = 1 с */
-                scope_screen = !scope_screen;
-                say("Screen: ", scope_screen ? "oscilloscope" : "text", "\r\n");
+                screen = (screen + 1) % SCREEN_COUNT;
+                say("Screen: ", screen_names[screen], "\r\n");
             }
         } else {
             if (!prev3 && held3 < 50 && scope_screen) {   /* отпустили быстро */
@@ -336,6 +341,8 @@ void app_handle_line(const char *line, void (*out)(const char *))
             "  clear   - clear the OLED text\r\n"
             "  ble     - Bluetooth status\r\n"
             "  scope   - switch OLED: text / oscilloscope\r\n"
+            "  tasks   - CPU load and stack of every task\r\n"
+            "  screen  - next OLED screen (text/scope/tasks)\r\n"
             "  pwm N   - test PWM duty 0..100 % (pin D3)\r\n"
             "  pwmf N  - test PWM frequency, Hz\r\n"
             "  help    - this text\r\n"
@@ -357,8 +364,13 @@ void app_handle_line(const char *line, void (*out)(const char *))
         log_clear();
         out("OLED cleared\r\n");
     } else if (strcmp(line, "scope") == 0) {
-        scope_screen = !scope_screen;
-        out(scope_screen ? "Screen: oscilloscope\r\n" : "Screen: text\r\n");
+        screen = scope_screen ? SCREEN_TEXT : SCREEN_SCOPE;
+        out("Screen: "); out(screen_names[screen]); out("\r\n");
+    } else if (strcmp(line, "tasks") == 0) {
+        stats_print(out);
+    } else if (strcmp(line, "screen") == 0) {
+        screen = (screen + 1) % SCREEN_COUNT;
+        out("Screen: "); out(screen_names[screen]); out("\r\n");
     } else if (strncmp(line, "pwmf ", 5) == 0) {
         uint32_t f = 0;
         for (const char *c = line + 5; *c >= '0' && *c <= '9'; c++) f = f * 10 + (uint32_t)(*c - '0');
@@ -493,8 +505,10 @@ static void display_task(void *arg)
 
             ssd1306_clear();
 
-            if (scope_screen) {
+            if (screen == SCREEN_SCOPE) {
                 scope_frame();                    /* снять сигнал и нарисовать осциллограмму */
+            } else if (screen == SCREEN_TASKS) {
+                stats_draw();                     /* таблица загрузки задач */
             } else {
                 /* Заголовок + линия под ним */
                 ssd1306_text(0, 0, "Hello, STM32!");
@@ -541,6 +555,7 @@ int main(void)
     xTaskCreate(temp_task,      "temp",      192, NULL, 1, NULL);
 
     ble_app_start();
+    stats_start();
 
     vTaskStartScheduler();   /* дальше управление у FreeRTOS, сюда не вернёмся */
     for (;;) { }
